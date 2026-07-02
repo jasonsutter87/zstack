@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>zstack — winamp in the z-axis</title>
+<style>
+  :root { --layer-w: 440px; --layer-h: 300px; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: radial-gradient(circle at 50% 30%, #14121f 0%, #050507 75%);
+    color: #cfe;
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    overflow: hidden;
+    cursor: grab;
+  }
+  body.dragging { cursor: grabbing; }
+
+  #viewport {
+    position: fixed; inset: 0;
+    display: grid; place-items: center;
+    perspective: 1500px;
+    perspective-origin: 50% 44%;
+  }
+  #stack {
+    position: relative;
+    width: var(--layer-w); height: var(--layer-h);
+    transform-style: preserve-3d;
+  }
+  .layer {
+    position: absolute; inset: 0;
+    width: var(--layer-w); height: var(--layer-h);
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,.14);
+    overflow: hidden;
+    background: rgba(255,255,255,.012);
+    box-shadow: 0 24px 70px rgba(0,0,0,.45);
+    will-change: filter, opacity;
+  }
+  .layer canvas { width: 100%; height: 100%; display: block; }
+  .layer .tag {
+    position: absolute; top: 12px; left: 14px;
+    font-size: 10px; letter-spacing: 3px; text-transform: uppercase;
+    opacity: .7; text-shadow: 0 0 8px currentColor; z-index: 2;
+    pointer-events: none;
+  }
+  .layer.active { border-color: rgba(140,220,255,.9); }
+  .layer.active .tag { opacity: 1; }
+
+  #hud {
+    position: fixed; bottom: 20px; left: 50%;
+    transform: translateX(-50%);
+    text-align: center; opacity: .85; user-select: none; pointer-events: none;
+  }
+  #hud .depth { font-size: 20px; font-weight: 700; color: #8fd0ff; text-shadow: 0 0 14px #2a6; }
+  #hud .keys { margin-top: 7px; font-size: 11px; opacity: .5; }
+  kbd { border: 1px solid rgba(255,255,255,.22); border-radius: 5px; padding: 1px 6px; margin: 0 1px; }
+  #drop {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; opacity: .4; letter-spacing: 1px; user-select: none; pointer-events: none;
+  }
+  #drop.live { color: #6f6; opacity: .8; }
+</style>
+</head>
+<body>
+  <div id="drop">♪ drag-drop an audio file for real FFT · synth signal running</div>
+  <div id="viewport"><div id="stack"></div></div>
+  <div id="hud">
+    <div class="depth">focus → layer <span id="cur">0</span> / <span id="total">0</span></div>
+    <div class="keys">
+      <kbd>↑</kbd><kbd>↓</kbd>/scroll rack focus · drag orbit · <kbd>R</kbd> snap 45° · <kbd>0</kbd> reset
+    </div>
+  </div>
+
+<script>
+const LAYERS = 12, GAP = 230;
+const PALETTE = ["#39ff14","#00e5ff","#ff2d95","#ffd000","#7c4dff","#ff6b35",
+                 "#00ffa3","#ff3860","#4dd0ff","#b8ff00","#ff00e6","#ffae00"];
+const TYPES = ["scope","bars","radial","plasma","stars","lissajous"];
+
+const stack = document.getElementById("stack");
+const curEl = document.getElementById("cur");
+const dropEl = document.getElementById("drop");
+document.getElementById("total").textContent = LAYERS - 1;
+
+// ---------- build layers ----------
+const layers = [];
+for (let i = 0; i < LAYERS; i++) {
+  const el = document.createElement("div");
+  el.className = "layer";
+  el.style.transform = `translateZ(${-i * GAP}px)`;
+  const color = PALETTE[i % PALETTE.length];
+  const type = TYPES[i % TYPES.length];
+  el.style.borderColor = color + "66";
+  const cv = document.createElement("canvas");
+  cv.width = 300; cv.height = 204;
+  el.innerHTML = `<span class="tag" style="color:${color}">${type} · z${i}</span>`;
+  el.appendChild(cv);
+  stack.appendChild(el);
+  // per-layer state (stars need persistence)
+  const stars = Array.from({length: 70}, () => ({ x: Math.cos(i+1)*0, z: 0 }));
+  for (const s of stars) { s.a = Math.atan2(Math.sin(i*9.7), Math.cos(i*4.3)); }
+  layers.push({ el, ctx: cv.getContext("2d"), w: cv.width, h: cv.height, color, type, i,
+                stars: makeStars(60), phase: i * 1.7 });
+}
+function makeStars(n){ const a=[]; for(let k=0;k<n;k++) a.push({x:(k*97%200-100)/100,y:(k*53%200-100)/100,z:(k%100)/100+0.01}); return a; }
+
+// ---------- audio ----------
+const audio = { wave: new Float32Array(256), bins: new Float32Array(64), energy: 0 };
+let real = null, t = 0;
+
+function synth() {
+  const bass = Math.sin(t*1.6)*0.5 + 0.5;
+  const mid  = Math.sin(t*5.0+1)*0.5 + 0.5;
+  audio.energy = bass*0.7 + mid*0.3;
+  for (let n = 0; n < audio.wave.length; n++) {
+    audio.wave[n] = Math.sin(n*0.18 + t*7)*0.45*bass
+                  + Math.sin(n*0.045 + t*2.3)*0.3*mid
+                  + Math.sin(n*0.5 + t*11)*0.12;
+  }
+  for (let b = 0; b < audio.bins.length; b++) {
+    const env = 1 - b/audio.bins.length*0.65;
+    audio.bins[b] = Math.max(0, (Math.sin(t*(1.3+b*0.21)+b*0.7)*0.5+0.5)*env*(0.45+bass*0.85));
+  }
+}
+function pullReal() {
+  real.an.getFloatTimeDomainData(real.td);
+  real.an.getByteFrequencyData(real.fd);
+  for (let n = 0; n < audio.wave.length; n++) audio.wave[n] = real.td[n] || 0;
+  let e = 0;
+  for (let b = 0; b < audio.bins.length; b++) { audio.bins[b] = real.fd[b*2]/255; e += audio.bins[b]; }
+  audio.energy = e / audio.bins.length;
+}
+
+// drag-drop a real track
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0]; if (!f) return;
+  const ac = new (window.AudioContext||window.webkitAudioContext)();
+  const au = new Audio(URL.createObjectURL(f)); au.loop = true; au.crossOrigin = "anonymous";
+  const src = ac.createMediaElementSource(au);
+  const an = ac.createAnalyser(); an.fftSize = 512;
+  src.connect(an); an.connect(ac.destination);
+  au.play(); ac.resume();
+  real = { an, td: new Float32Array(256), fd: new Uint8Array(256) };
+  dropEl.textContent = "♪ " + f.name + " · live FFT"; dropEl.classList.add("live");
+});
+
+// ---------- visualizers ----------
+function draw(L, time) {
+  const { ctx, w, h, color } = L;
+  // fade trails toward TRANSPARENT (not black) so layers behind show through
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.fillStyle = "rgba(0,0,0,0.30)"; ctx.fillRect(0,0,w,h);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.save();
+  ctx.strokeStyle = color; ctx.fillStyle = color;
+  ctx.shadowBlur = 12; ctx.shadowColor = color;
+  const ph = L.phase;
+  switch (L.type) {
+    case "scope": {
+      ctx.lineWidth = 2; ctx.beginPath();
+      for (let n = 0; n < audio.wave.length; n++) {
+        const x = n/audio.wave.length*w, y = h/2 + audio.wave[n]*h*0.42;
+        n ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+      } ctx.stroke(); break;
+    }
+    case "bars": {
+      const bw = w/audio.bins.length;
+      for (let b = 0; b < audio.bins.length; b++) {
+        const bh = audio.bins[b]*h*0.95;
+        ctx.fillRect(b*bw, h-bh, bw-1, bh);
+      } break;
+    }
+    case "radial": {
+      ctx.translate(w/2,h/2); ctx.lineWidth = 2;
+      const R = Math.min(w,h)*0.18;
+      for (let b = 0; b < audio.bins.length; b++) {
+        const a = b/audio.bins.length*Math.PI*2 + time*0.3;
+        const len = R + audio.bins[b]*h*0.4;
+        ctx.beginPath(); ctx.moveTo(Math.cos(a)*R,Math.sin(a)*R);
+        ctx.lineTo(Math.cos(a)*len,Math.sin(a)*len); ctx.stroke();
+      } break;
+    }
+    case "plasma": {
+      ctx.shadowBlur = 0;
+      const img = ctx.getImageData(0,0,w,h), d = img.data, step = 4;
+      for (let y = 0; y < h; y += step) for (let x = 0; x < w; x += step) {
+        const v = Math.sin(x*0.04+time*2+ph) + Math.sin(y*0.05-time*1.5)
+                + Math.sin((x+y)*0.03+time) + audio.energy*2;
+        const idx = (y*w+x)*4;
+        const r = (Math.sin(v)*0.5+0.5)*255, g = (Math.sin(v+2)*0.5+0.5)*255, b = (Math.sin(v+4)*0.5+0.5)*255;
+        const a = Math.max(r,g,b)*0.8; // dark plasma = transparent, bright = glowing
+        for (let dy=0;dy<step;dy++) for (let dx=0;dx<step;dx++){ const j=idx+(dy*w+dx)*4; d[j]=r;d[j+1]=g;d[j+2]=b;d[j+3]=a; }
+      } ctx.putImageData(img,0,0); break;
+    }
+    case "stars": {
+      ctx.translate(w/2,h/2); const sp = 0.004 + audio.energy*0.03;
+      for (const s of L.stars) {
+        s.z -= sp; if (s.z <= 0.02) { s.z = 1; s.x = (Math.sin(time+s.y*99)); s.y = (Math.cos(time*1.3+s.x*70)); }
+        const px = s.x/s.z*w*0.5, py = s.y/s.z*h*0.5, r = (1-s.z)*3;
+        ctx.globalAlpha = 1-s.z; ctx.beginPath(); ctx.arc(px,py,r,0,7); ctx.fill();
+      } ctx.globalAlpha = 1; break;
+    }
+    case "lissajous": {
+      ctx.translate(w/2,h/2); ctx.lineWidth = 2; ctx.beginPath();
+      const A = h*0.4, a = 3+Math.sin(time*0.2), b = 2+Math.cos(time*0.17);
+      for (let k = 0; k <= 200; k++) {
+        const u = k/200*Math.PI*2;
+        const x = Math.sin(a*u+time+ph)*A*(0.6+audio.energy*0.6);
+        const y = Math.sin(b*u)*A;
+        k ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+      } ctx.stroke(); break;
+    }
+  }
+  ctx.restore();
+}
+
+// ---------- camera / DOF ----------
+let depth = 0, depthT = 0, rotY = 0, rotYT = 0, rotX = 0, rotXT = 0, frame = 0;
+
+function input(stepDepth) {
+  depthT = Math.max(0, Math.min(LAYERS-1, depthT + stepDepth));
+}
+addEventListener("keydown", e => {
+  if (e.key === "ArrowUp")   { input(1);  e.preventDefault(); }
+  if (e.key === "ArrowDown") { input(-1); e.preventDefault(); }
+  if (e.key.toLowerCase() === "r") { const on = Math.abs(rotYT) < 1; rotYT = on?45:0; rotXT = on?-12:0; }
+  if (e.key === "0") { depthT=0; rotYT=0; rotXT=0; }
+});
+addEventListener("wheel", e => { input(e.deltaY>0?-0.5:0.5); e.preventDefault(); }, {passive:false});
+
+let dragging=false,lx=0,ly=0;
+addEventListener("mousedown", e=>{dragging=true;lx=e.clientX;ly=e.clientY;document.body.classList.add("dragging");});
+addEventListener("mousemove", e=>{ if(!dragging)return;
+  rotYT += (e.clientX-lx)*0.4; rotXT -= (e.clientY-ly)*0.4;
+  rotXT = Math.max(-80,Math.min(80,rotXT)); lx=e.clientX; ly=e.clientY; });
+addEventListener("mouseup", ()=>{dragging=false;document.body.classList.remove("dragging");});
+
+// ---------- main loop ----------
+function loop() {
+  t += 1/60; frame++;
+  real ? pullReal() : synth();
+
+  // ease the camera — this is the cinematic focus rack
+  depth += (depthT-depth)*0.12;
+  rotY  += (rotYT-rotY)*0.18;
+  rotX  += (rotXT-rotX)*0.18;
+
+  stack.style.transform = `translateZ(${depth*GAP}px) rotateX(${rotX}deg) rotateY(${rotY}deg)`;
+  curEl.textContent = Math.max(0, Math.min(LAYERS-1, Math.round(depth)));
+
+  for (const L of layers) {
+    const rel = depth - L.i;        // >0 = passed (between us & camera), <0 = ahead in the distance
+    const dist = Math.abs(rel);
+    // fully-passed layers: hide so they don't swing around and blow up in front of the lens
+    if (rel > 1.1) { L.el.style.visibility = "hidden"; continue; }
+    L.el.style.visibility = "visible";
+    // far layers animate at lower fps to keep it smooth
+    if (dist < 3.5 || frame % 3 === 0) draw(L, t);
+
+    let blur, bright, opacity;
+    if (rel > 0) {                  // punching through — dissolve as it passes us
+      blur = Math.min(18, rel*7);
+      bright = 1;
+      opacity = Math.max(0, 1 - rel*1.25);
+    } else {                        // ahead — classic depth-of-field falloff
+      blur = Math.min(16, dist*3.2);
+      bright = Math.max(0.4, 1 - dist*0.12);
+      opacity = Math.max(0.18, 1 - dist*0.055);
+    }
+    L.el.style.filter = `blur(${blur.toFixed(2)}px) brightness(${bright.toFixed(2)})`;
+    L.el.style.opacity = opacity.toFixed(2);
+    L.el.classList.toggle("active", Math.round(depth) === L.i);
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

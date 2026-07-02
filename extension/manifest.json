@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "zstack — spin your DOM in z-space",
+  "version": "0.1.0",
+  "description": "Explode the current page into its z-index / stacking layers and orbit them in 3D. Catch z-index felonies at a glance.",
+  "permissions": ["scripting", "activeTab"],
+  "action": {
+    "default_title": "zstack: explode this page into z-index space (click to toggle)"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
