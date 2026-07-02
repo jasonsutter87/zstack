@@ -4,8 +4,18 @@
   "version": "0.1.0",
   "description": "Explode the current page into its z-index / stacking layers and orbit them in 3D. Catch z-index felonies at a glance.",
   "permissions": ["scripting", "activeTab"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
-    "default_title": "zstack: explode this page into z-index space (click to toggle)"
+    "default_title": "zstack: explode this page into z-index space (click to toggle)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "background": {
     "service_worker": "background.js"
