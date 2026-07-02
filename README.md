@@ -9,6 +9,8 @@ It's a forensic tool for the stacking bugs you can't catch in flat DevTools: the
 menu that hides behind a banner, the modal that won't come to the front, the
 `z-index: 999999` arms race in someone else's CSS.
 
+![zstack exploding a page into its stacking layers, with the report panel open](docs/preview.png)
+
 ---
 
 ## Install (2 minutes, no build step)
