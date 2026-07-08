@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>zstack — spin your DOM in z-space</title>
+  <meta name="description" content="zstack explodes any web page into its z-index / stacking layers and floats them in 3D — a forensic tool for the stacking bugs flat DevTools can't catch." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 28 10v12L16 29 4 22V10z' fill='none' stroke='%233fe825' stroke-width='4' stroke-linejoin='round'/%3E%3C/svg%3E" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="zstack — spin your DOM in z-space" />
+  <meta property="og:description" content="See the invisible stacking layers of any web page. Catch z-index felonies at a glance." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="assets/screenshot.png" />
+
+  <style>
+    :root {
+      --bg:       #050608;
+      --bg-2:     #0b0d11;
+      --panel:    #0e1116;
+      --panel-2:  #12161d;
+      --line:     #1c2129;
+      --line-2:   #262d38;
+      --text:     #e6ebf0;
+      --muted:    #8a94a3;
+      --dim:      #59616e;
+      --acc:      #3fe825;
+      --acc-dim:  #2aa018;
+      --felony:   #ff4d5e;
+
+      --l0:#ff4d6d; --l1:#e83fb0; --l2:#8b5cff; --l3:#ffb92e;
+      --l4:#5b7cff; --l5:#ff7a3d; --l6:#33e88f;
+
+      --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --maxw: 1080px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+    /* subtle grid + glow backdrop */
+    body::before {
+      content: "";
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(60rem 40rem at 72% -10%, rgba(63,232,37,.10), transparent 60%),
+        radial-gradient(50rem 40rem at 10% 0%, rgba(139,92,255,.08), transparent 55%),
+        linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 100% 46px,
+        linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0 / 46px 100%;
+      opacity: .5;
+      -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent 70%);
+              mask-image: linear-gradient(180deg, #000 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    a { color: var(--acc); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+    /* ---------- header ---------- */
+    header {
+      position: sticky; top: 0; z-index: 50;
+      backdrop-filter: blur(10px);
+      background: color-mix(in srgb, var(--bg) 82%, transparent);
+      border-bottom: 1px solid var(--line);
+    }
+    .nav { display: flex; align-items: center; gap: 18px; height: 62px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-weight: 600; letter-spacing: .02em; color: var(--text); }
+    .brand:hover { text-decoration: none; }
+    .brand svg { width: 26px; height: 26px; display: block; }
+    .brand b { color: var(--acc); }
+    .nav .spacer { flex: 1; }
+    .nav a.navlink { color: var(--muted); font-family: var(--mono); font-size: 13.5px; }
+    .nav a.navlink:hover { color: var(--text); text-decoration: none; }
+    .nav a.navlink.active { color: var(--acc); }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--mono); font-size: 13.5px; font-weight: 600;
+      padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line-2);
+      color: var(--text); background: var(--panel-2);
+      transition: border-color .15s, transform .05s, background .15s;
+    }
+    .btn:hover { text-decoration: none; border-color: var(--acc-dim); background: var(--panel); }
+    .btn:active { transform: translateY(1px); }
+    .btn.primary {
+      color: #04120a; background: var(--acc); border-color: var(--acc);
+      box-shadow: 0 0 0 0 rgba(63,232,37,.4);
+    }
+    .btn.primary:hover { background: #55f43e; box-shadow: 0 8px 30px -8px rgba(63,232,37,.55); }
+    .nav-toggle { display: none; }
+
+    /* ---------- views ---------- */
+    main { position: relative; z-index: 1; min-height: 60vh; }
+    .view { display: none; animation: fade .35s ease both; }
+    .view.active { display: block; }
+    @keyframes fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    /* ---------- hero ---------- */
+    .hero { padding: 84px 0 56px; text-align: center; }
+    .kicker {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+      color: var(--acc); border: 1px solid var(--acc-dim); background: rgba(63,232,37,.06);
+      padding: 5px 12px; border-radius: 100px; margin-bottom: 26px;
+    }
+    .kicker .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--acc); box-shadow: 0 0 10px var(--acc); }
+    h1 { font-size: clamp(2.4rem, 6vw, 4rem); line-height: 1.05; margin: 0 0 20px; letter-spacing: -.02em; font-weight: 800; }
+    h1 .z { color: var(--acc); }
+    .lede { max-width: 640px; margin: 0 auto 34px; color: var(--muted); font-size: clamp(1.05rem, 2.4vw, 1.25rem); }
+    .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .cta .hint { font-family: var(--mono); font-size: 12px; color: var(--dim); width: 100%; margin-top: 14px; }
+
+    /* screenshot */
+    .shot {
+      margin: 56px auto 0; max-width: 960px; border: 1px solid var(--line-2); border-radius: 14px; overflow: hidden;
+      background: #000; box-shadow: 0 40px 120px -40px rgba(63,232,37,.22), 0 20px 60px -30px rgba(0,0,0,.9);
+    }
+    .shot .bar { display: flex; align-items: center; gap: 7px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .shot .bar i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; background: var(--line-2); }
+    .shot .bar .u { margin-left: 12px; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+    .shot img { display: block; width: 100%; height: auto; }
+
+    /* ---------- sections ---------- */
+    section { padding: 60px 0; border-top: 1px solid var(--line); }
+    .sec-head { margin-bottom: 34px; }
+    .sec-head .tag { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--acc); }
+    .sec-head h2 { font-size: clamp(1.5rem, 3.5vw, 2.1rem); margin: 8px 0 6px; letter-spacing: -.01em; }
+    .sec-head p { color: var(--muted); margin: 0; max-width: 640px; }
+
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    .card {
+      border: 1px solid var(--line); border-radius: 12px; padding: 22px; background: linear-gradient(180deg, var(--panel), var(--bg-2));
+      transition: border-color .15s, transform .15s;
+    }
+    .card:hover { border-color: var(--line-2); transform: translateY(-2px); }
+    .card .ico { font-size: 22px; margin-bottom: 12px; display: block; }
+    .card h3 { margin: 0 0 6px; font-size: 1.05rem; font-family: var(--mono); }
+    .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+    .card code { font-family: var(--mono); font-size: .85em; color: var(--acc); background: rgba(63,232,37,.08); padding: 1px 5px; border-radius: 4px; }
+
+    /* steps */
+    .steps { counter-reset: step; display: grid; gap: 14px; }
+    .step { display: grid; grid-template-columns: 42px 1fr; gap: 16px; align-items: start; padding: 18px 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .step::before {
+      counter-increment: step; content: counter(step);
+      width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center;
+      font-family: var(--mono); font-weight: 700; color: var(--acc);
+      background: rgba(63,232,37,.08); border: 1px solid var(--acc-dim);
+    }
+    .step h3 { margin: 4px 0 4px; font-size: 1rem; font-family: var(--mono); }
+    .step p { margin: 0; color: var(--muted); font-size: .95rem; }
+    .step code { font-family: var(--mono); color: var(--text); background: var(--panel-2); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-2); }
+
+    /* keys table */
+    .keys { width: 100%; border-collapse: collapse; font-size: .95rem; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .keys th, .keys td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--line); }
+    .keys th { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); background: var(--panel); }
+    .keys tr:last-child td { border-bottom: none; }
+    .keys td:first-child { white-space: nowrap; }
+    kbd {
+      font-family: var(--mono); font-size: 12px; color: var(--text);
+      background: var(--panel-2); border: 1px solid var(--line-2); border-bottom-width: 2px;
+      border-radius: 6px; padding: 2px 8px; display: inline-block; min-width: 20px; text-align: center;
+    }
+
+    /* layer legend strip */
+    .layers { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+    .layer { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 100px; padding: 6px 13px; background: var(--panel); }
+    .layer .d { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 8px currentColor; }
+
+    /* privacy highlight banner */
+    .priv-banner {
+      display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+      border: 1px solid var(--acc-dim); border-radius: 14px; padding: 22px 24px;
+      background: linear-gradient(90deg, rgba(63,232,37,.07), transparent);
+    }
+    .priv-banner .big { font-family: var(--mono); font-weight: 700; font-size: 1.15rem; color: var(--acc); }
+    .priv-banner p { margin: 0; color: var(--muted); flex: 1 1 320px; }
+
+    /* ---------- legal (doc) pages ---------- */
+    .doc { padding: 56px 0 40px; max-width: 760px; }
+    .doc .backlink { font-family: var(--mono); font-size: 13px; color: var(--muted); display: inline-flex; gap: 6px; margin-bottom: 26px; }
+    .doc h1 { font-size: clamp(1.9rem, 5vw, 2.6rem); margin: 0 0 6px; }
+    .doc .eff { font-family: var(--mono); font-size: 13px; color: var(--dim); margin: 0 0 34px; }
+    .doc h2 { font-size: 1.25rem; margin: 40px 0 10px; padding-top: 6px; border-top: 1px solid var(--line); padding-top: 26px; }
+    .doc h2:first-of-type { border-top: none; padding-top: 0; }
+    .doc h3 { font-size: 1.02rem; font-family: var(--mono); margin: 24px 0 8px; }
+    .doc p, .doc li { color: var(--cadet, #c4ccd6); }
+    .doc ul { padding-left: 22px; }
+    .doc li { margin: 6px 0; }
+    .doc code { font-family: var(--mono); font-size: .88em; color: var(--acc); background: rgba(63,232,37,.08); padding: 1px 5px; border-radius: 4px; }
+    .doc .callout { border-left: 3px solid var(--acc-dim); background: var(--panel); padding: 14px 18px; border-radius: 0 10px 10px 0; margin: 18px 0; color: var(--muted); }
+    .toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 30px; }
+    .toc a { font-family: var(--mono); font-size: 12.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 100px; padding: 5px 12px; }
+    .toc a:hover { text-decoration: none; color: var(--acc); border-color: var(--acc-dim); }
+
+    /* ---------- footer ---------- */
+    footer { border-top: 1px solid var(--line); padding: 40px 0; margin-top: 40px; }
+    .foot { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .foot .brand { font-size: 14px; }
+    .foot .spacer { flex: 1; }
+    .foot a { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+    .foot a:hover { color: var(--acc); text-decoration: none; }
+    .foot .cr { font-family: var(--mono); font-size: 12px; color: var(--dim); width: 100%; margin-top: 6px; }
+
+    /* ---------- responsive ---------- */
+    @media (max-width: 720px) {
+      .grid { grid-template-columns: 1fr; }
+      .nav .desktop { display: none; }
+      .nav-toggle {
+        display: inline-flex; margin-left: auto; background: var(--panel-2);
+        border: 1px solid var(--line-2); color: var(--text); border-radius: 8px;
+        padding: 8px 10px; font-family: var(--mono); cursor: pointer;
+      }
+      .mobile-menu { display: none; flex-direction: column; gap: 4px; padding: 8px 0 14px; border-bottom: 1px solid var(--line); }
+      .mobile-menu.open { display: flex; }
+      .mobile-menu a { font-family: var(--mono); color: var(--muted); padding: 10px 4px; font-size: 15px; }
+      .mobile-menu a.active { color: var(--acc); }
+      .hero { padding: 56px 0 40px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <nav class="nav">
+        <a class="brand" href="#/" aria-label="zstack home">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 28 10v12L16 29 4 22V10z" fill="none" stroke="#3fe825" stroke-width="4" stroke-linejoin="round"/></svg>
+          <span><b>z</b>stack</span>
+        </a>
+        <div class="spacer desktop"></div>
+        <a class="navlink desktop" href="#/" data-route="/">Home</a>
+        <a class="navlink desktop" href="#/#install">Install</a>
+        <a class="navlink desktop" href="#/terms" data-route="/terms">Terms</a>
+        <a class="navlink desktop" href="#/privacy" data-route="/privacy">Privacy</a>
+        <a class="btn primary desktop" href="https://github.com/jasonsutter87/zstack" target="_blank" rel="noopener">Get it ↗</a>
+        <button class="nav-toggle" id="navToggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
+      </nav>
+      <div class="mobile-menu" id="mobileMenu">
+        <a href="#/" data-route="/">Home</a>
+        <a href="#/#install">Install</a>
+        <a href="#/terms" data-route="/terms">Terms</a>
+        <a href="#/privacy" data-route="/privacy">Privacy</a>
+        <a href="https://github.com/jasonsutter87/zstack" target="_blank" rel="noopener">Get it on GitHub ↗</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- ===================== HOME ===================== -->
+    <section class="view" id="view-home" role="region" aria-label="Home">
+      <div class="wrap">
+        <div class="hero">
+          <span class="kicker"><span class="dot"></span> Chrome / Brave extension · v0.1.0</span>
+          <h1>Spin your DOM in <span class="z">z-space</span></h1>
+          <p class="lede">
+            zstack explodes any web page into its <strong>z-index / stacking layers</strong>
+            and floats them in 3D — so you can finally <em>see</em> which thing is on top of what, and why.
+          </p>
+          <div class="cta">
+            <a class="btn primary" href="#/#install">Install in 2 minutes</a>
+            <a class="btn" href="https://github.com/jasonsutter87/zstack" target="_blank" rel="noopener">View source ↗</a>
+            <span class="hint">Local-only · no build step · no servers · no tracking</span>
+          </div>
+        </div>
+
+        <figure class="shot">
+          <div class="bar"><i></i><i></i><i></i><span class="u">zstack — exploded stacking layers</span></div>
+          <img src="assets/screenshot.png" alt="zstack exploding a web page into its stacking layers with the report panel open" loading="lazy" />
+        </figure>
+      </div>
+
+      <!-- what it is -->
+      <section>
+        <div class="wrap">
+          <div class="sec-head">
+            <div class="tag">// the problem</div>
+            <h2>Flat DevTools can't show you a stacking bug</h2>
+            <p>The menu that hides behind a banner. The modal that won't come to the front. The <code>z-index: 999999</code> arms race in someone else's CSS. zstack is a forensic tool for exactly these.</p>
+          </div>
+          <div class="layers" aria-label="Example stacking layers, front to back">
+            <span class="layer"><span class="d" style="color:var(--l0)"></span> z-index: 2147483647</span>
+            <span class="layer"><span class="d" style="color:var(--l1)"></span> z-index: 2147483631</span>
+            <span class="layer"><span class="d" style="color:var(--l2)"></span> z-index: 2</span>
+            <span class="layer"><span class="d" style="color:var(--l3)"></span> z-index: 1</span>
+            <span class="layer"><span class="d" style="color:var(--l4)"></span> stacking context (z:auto)</span>
+            <span class="layer"><span class="d" style="color:var(--l5)"></span> images &amp; svg (page flow)</span>
+            <span class="layer"><span class="d" style="color:var(--l6)"></span> page flow (base)</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- what it catches -->
+      <section>
+        <div class="wrap">
+          <div class="sec-head">
+            <div class="tag">// diagnostics</div>
+            <h2>What it catches</h2>
+            <p>zstack flags the stacking mistakes that cause real bugs — right in a report panel next to the exploded view.</p>
+          </div>
+          <div class="grid">
+            <div class="card">
+              <span class="ico">🚨</span>
+              <h3>Absurd z-index values</h3>
+              <p>Anything with <code>|z-index| ≥ 100,000</code> is called out as a red "felony" layer. That <code>2147483647</code> you've seen? Yeah.</p>
+            </div>
+            <div class="card">
+              <span class="ico">🗜️</span>
+              <h3>Silently clamped values</h3>
+              <p>Browsers cap z-index at ~2.1 billion. zstack reads your original CSS and shows you where a value got quietly clamped.</p>
+            </div>
+            <div class="card">
+              <span class="ico">🔇</span>
+              <h3>z-index that does nothing</h3>
+              <p>A <code>z-index</code> on a <code>position: static</code> element is ignored by the browser. zstack points it out.</p>
+            </div>
+            <div class="card">
+              <span class="ico">🧬</span>
+              <h3>Why a layer exists</h3>
+              <p>Explains what created each stacking context — <code>transform</code>, <code>opacity</code>, <code>filter</code>, <code>will-change</code>, <code>position</code>…</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- two views -->
+      <section>
+        <div class="wrap">
+          <div class="sec-head">
+            <div class="tag">// viewing</div>
+            <h2>Two ways to look at it</h2>
+          </div>
+          <div class="grid">
+            <div class="card">
+              <span class="ico">🧊</span>
+              <h3>3D</h3>
+              <p>The layers float in depth. Fly the camera through them, rack focus, and orbit to see the gaps between layers.</p>
+            </div>
+            <div class="card">
+              <span class="ico">▦</span>
+              <h3>2D</h3>
+              <p>The same layers laid out as a flat, scrollable grid — easier to scan at a glance. Flip between them with the <code>V</code> key.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- install -->
+      <section id="install">
+        <div class="wrap">
+          <div class="sec-head">
+            <div class="tag">// install</div>
+            <h2>Up and running in 2 minutes</h2>
+            <p>No build step. Load the unpacked extension and you're done.</p>
+          </div>
+          <div class="steps">
+            <div class="step"><div><h3>Download the repo</h3><p>Grab the ZIP from GitHub (<code>Code → Download ZIP</code>) and unzip it, or clone it.</p></div></div>
+            <div class="step"><div><h3>Open your extensions page</h3><p>Go to <code>chrome://extensions</code> (or <code>brave://extensions</code>).</p></div></div>
+            <div class="step"><div><h3>Turn on Developer mode</h3><p>Flip the toggle in the top-right corner.</p></div></div>
+            <div class="step"><div><h3>Load unpacked</h3><p>Click <code>Load unpacked</code> and select the <code>extension/</code> folder. Pin the zstack icon to your toolbar.</p></div></div>
+          </div>
+          <p style="margin-top:20px;color:var(--muted)">Now open any web page and click the zstack icon. Click it again (or press <kbd>esc</kbd>) to close. Prefer no install? Open <code>index.html</code> from the repo for a self-contained demo.</p>
+          <div class="cta" style="justify-content:flex-start;margin-top:24px">
+            <a class="btn primary" href="https://github.com/jasonsutter87/zstack" target="_blank" rel="noopener">Get zstack on GitHub ↗</a>
+          </div>
+        </div>
+      </section>
+
+      <!-- controls -->
+      <section>
+        <div class="wrap">
+          <div class="sec-head">
+            <div class="tag">// controls</div>
+            <h2>Controls</h2>
+          </div>
+          <table class="keys">
+            <thead><tr><th>Key / action</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><kbd>↑</kbd> <kbd>↓</kbd> / scroll</td><td>rack focus through the layers</td></tr>
+              <tr><td>drag</td><td>orbit the stack (3D)</td></tr>
+              <tr><td><kbd>V</kbd></td><td>switch 2D / 3D view</td></tr>
+              <tr><td><kbd>L</kbd></td><td>show / hide the report panel</td></tr>
+              <tr><td><kbd>P</kbd></td><td>toggle paint / wire rendering</td></tr>
+              <tr><td><kbd>D</kbd></td><td>re-print the report to the DevTools console</td></tr>
+              <tr><td><kbd>R</kbd></td><td>snap to a 45° angle</td></tr>
+              <tr><td><kbd>0</kbd></td><td>reset the camera</td></tr>
+              <tr><td><kbd>esc</kbd></td><td>close (or click the toolbar icon again)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- privacy highlight -->
+      <section>
+        <div class="wrap">
+          <div class="priv-banner">
+            <span class="big">🔒 Runs entirely on your machine</span>
+            <p>zstack only reads the page you're on when you click it, using just the <code>activeTab</code> and <code>scripting</code> permissions. It sends nothing anywhere, has no servers, and does no tracking. Read the full <a href="#/privacy">Privacy Policy</a>.</p>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ===================== TERMS ===================== -->
+    <section class="view" id="view-terms" role="region" aria-label="Terms of Service">
+      <div class="wrap doc">
+        <a class="backlink" href="#/">← back to home</a>
+        <h1>Terms of Service</h1>
+        <p class="eff">Effective July 8, 2026 · Last updated July 8, 2026</p>
+
+        <nav class="toc">
+          <a href="#terms-accept">1. Acceptance</a>
+          <a href="#terms-what">2. What zstack is</a>
+          <a href="#terms-license">3. License</a>
+          <a href="#terms-use">4. Acceptable use</a>
+          <a href="#terms-warranty">5. No warranty</a>
+          <a href="#terms-liability">6. Liability</a>
+          <a href="#terms-changes">7. Changes</a>
+          <a href="#terms-contact">8. Contact</a>
+        </nav>
+
+        <p>These Terms of Service ("Terms") govern your use of <strong>zstack</strong> (the "Extension") and this website. zstack is a free, open-source developer tool. By using it, you agree to these Terms.</p>
+
+        <h2 id="terms-accept">1. Acceptance of these Terms</h2>
+        <p>By installing, loading, or using the Extension, or by using this website, you confirm that you have read and agree to be bound by these Terms. If you do not agree, do not use the Extension or the website.</p>
+
+        <h2 id="terms-what">2. What zstack is</h2>
+        <p>zstack is a browser extension for Chromium browsers (Chrome, Brave, and similar) that analyzes the currently active web page and renders its z-index / stacking layers for inspection. It is a diagnostic and educational tool intended for developers, designers, and QA engineers.</p>
+        <div class="callout">zstack operates locally within your browser. It has no backend service, no user accounts, and does not transmit the pages you inspect to us or any third party. See the <a href="#/privacy">Privacy Policy</a> for details.</div>
+
+        <h2 id="terms-license">3. License</h2>
+        <p>zstack is released under the <strong>MIT License</strong>. In short, you are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software, subject to including the original copyright and license notice. The software is provided "as is". The full license text is included in the project repository and governs the software itself; where these Terms and the MIT License conflict regarding the software, the MIT License controls.</p>
+
+        <h2 id="terms-use">4. Acceptable use</h2>
+        <p>You agree to use zstack lawfully and responsibly. You will not:</p>
+        <ul>
+          <li>use the Extension to access, inspect, or interfere with web pages or systems you are not authorized to access;</li>
+          <li>use it in a way that violates the terms of service of the websites you visit or any applicable law;</li>
+          <li>misrepresent the origin of the software, or remove or obscure its copyright and license notices;</li>
+          <li>rely on it as the sole basis for a security, safety, or compliance decision.</li>
+        </ul>
+        <p>zstack inspects the page you explicitly point it at. You are responsible for the pages you choose to inspect and for how you use the results.</p>
+
+        <h2 id="terms-warranty">5. No warranty</h2>
+        <p>The Extension and website are provided <strong>"as is" and "as available," without warranty of any kind</strong>, express or implied, including but not limited to the implied warranties of merchantability, fitness for a particular purpose, and non-infringement. zstack renders a fast approximation of a page's stacking structure; it may be incomplete or inaccurate, and it does not replace the browser's own developer tools. We do not warrant that it will be error-free or uninterrupted.</p>
+
+        <h2 id="terms-liability">6. Limitation of liability</h2>
+        <p>To the maximum extent permitted by law, in no event shall the author(s) or copyright holders be liable for any claim, damages, or other liability — whether in an action of contract, tort, or otherwise — arising from, out of, or in connection with the Extension, the website, or the use of or other dealings in the software.</p>
+
+        <h2 id="terms-changes">7. Changes to these Terms</h2>
+        <p>We may update these Terms from time to time. When we do, we will revise the "Last updated" date above. Continued use of the Extension or website after changes take effect constitutes acceptance of the revised Terms.</p>
+
+        <h2 id="terms-contact">8. Contact</h2>
+        <p>Questions about these Terms? Email <a href="mailto:jason@growdnd.com">jason@growdnd.com</a> or open an issue on the <a href="https://github.com/jasonsutter87/zstack" target="_blank" rel="noopener">GitHub repository</a>.</p>
+      </div>
+    </section>
+
+    <!-- ===================== PRIVACY ===================== -->
+    <section class="view" id="view-privacy" role="region" aria-label="Privacy Policy">
+      <div class="wrap doc">
+        <a class="backlink" href="#/">← back to home</a>
+        <h1>Privacy Policy</h1>
+        <p class="eff">Effective July 8, 2026 · Last updated July 8, 2026</p>
+
+        <div class="callout"><strong>The short version:</strong> zstack does not collect, store, or transmit any personal data. It runs entirely inside your browser, only reads the page you actively point it at, and sends nothing to any server. There are no accounts, no analytics, and no tracking.</div>
+
+        <nav class="toc">
+          <a href="#priv-scope">1. Scope</a>
+          <a href="#priv-collect">2. What we collect</a>
+          <a href="#priv-perms">3. Permissions</a>
+          <a href="#priv-local">4. Local processing</a>
+          <a href="#priv-site">5. This website</a>
+          <a href="#priv-third">6. Third parties</a>
+          <a href="#priv-children">7. Children</a>
+          <a href="#priv-changes">8. Changes</a>
+          <a href="#priv-contact">9. Contact</a>
+        </nav>
+
+        <h2 id="priv-scope">1. Scope</h2>
+        <p>This Privacy Policy explains how the <strong>zstack</strong> browser extension and this website handle information. It applies to the Extension published from the zstack project and to this marketing/documentation website.</p>
+
+        <h2 id="priv-collect">2. What we collect</h2>
+        <p><strong>Nothing.</strong> zstack does not collect, store, sell, or share any personal information or usage data. Specifically, the Extension does <em>not</em>:</p>
+        <ul>
+          <li>create user accounts or ask you to log in;</li>
+          <li>send the content of the pages you inspect to us or anyone else;</li>
+          <li>use analytics, telemetry, cookies, fingerprinting, or advertising identifiers;</li>
+          <li>maintain any server or database that stores your data.</li>
+        </ul>
+
+        <h2 id="priv-perms">3. Browser permissions</h2>
+        <p>zstack requests only the minimum permissions needed to do its job:</p>
+        <ul>
+          <li><code>activeTab</code> — grants temporary access to the current tab <em>only</em> when you click the zstack toolbar icon, so it can read that page's structure.</li>
+          <li><code>scripting</code> — lets zstack inject the overlay script that analyzes and renders the stacking layers on the page you're viewing.</li>
+        </ul>
+        <p>zstack does not request broad host permissions and does not run in the background on pages you haven't explicitly activated it on.</p>
+
+        <h2 id="priv-local">4. Everything happens locally</h2>
+        <p>When you click the zstack icon, the analysis and 3D/2D rendering run entirely within your browser on your device. The DOM information zstack reads is used only to build the on-screen visualization and report, and is discarded when you close the overlay. Nothing is uploaded, logged remotely, or persisted between sessions by us.</p>
+        <div class="callout">zstack reads same-origin stylesheets to detect original ("authored") z-index values and clamping. This reading also happens locally in your browser and is never transmitted anywhere.</div>
+
+        <h2 id="priv-site">5. This website</h2>
+        <p>This website is a static informational site. It does not set tracking cookies or run advertising or analytics scripts. If the site is hosted on a third-party platform (for example, a static hosting provider), that host may automatically record standard technical logs such as IP addresses and user-agent strings for security and operational purposes. We do not control, combine, or use those logs to identify or profile you.</p>
+
+        <h2 id="priv-third">6. Third-party services</h2>
+        <p>zstack does not integrate any third-party SDKs, analytics, or advertising networks. If you choose to visit our source repository (for example, on GitHub), that third party's own privacy policy governs your interaction with it.</p>
+
+        <h2 id="priv-children">7. Children's privacy</h2>
+        <p>zstack is a developer tool and is not directed to children. Because we collect no personal information from anyone, we likewise collect none from children.</p>
+
+        <h2 id="priv-changes">8. Changes to this policy</h2>
+        <p>If this policy changes, we will update the "Last updated" date above and post the revised version here. Because zstack collects no data, we do not expect material changes, but we will note any if they occur.</p>
+
+        <h2 id="priv-contact">9. Contact</h2>
+        <p>Questions about your privacy or this policy? Email <a href="mailto:jason@growdnd.com">jason@growdnd.com</a> or open an issue on the <a href="https://github.com/jasonsutter87/zstack" target="_blank" rel="noopener">GitHub repository</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap foot">
+      <a class="brand" href="#/">
+        <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><path d="M16 3 28 10v12L16 29 4 22V10z" fill="none" stroke="#3fe825" stroke-width="4" stroke-linejoin="round"/></svg>
+        <span><b style="color:var(--acc)">z</b>stack</span>
+      </a>
+      <div class="spacer"></div>
+      <a href="#/">Home</a>
+      <a href="#/terms">Terms</a>
+      <a href="#/privacy">Privacy</a>
+      <a href="https://github.com/jasonsutter87/zstack" target="_blank" rel="noopener">GitHub ↗</a>
+      <div class="cr">MIT licensed · zstack runs entirely in your browser · © 2026</div>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var routes = {
+        '/':        { view: 'view-home',    title: 'zstack — spin your DOM in z-space' },
+        '/terms':   { view: 'view-terms',   title: 'Terms of Service — zstack' },
+        '/privacy': { view: 'view-privacy', title: 'Privacy Policy — zstack' }
+      };
+
+      function parseHash() {
+        // supports "#/", "#/terms", and "#/#install" (path + in-page anchor)
+        var raw = (location.hash || '#/').slice(1);      // "/terms" or "/#install"
+        var anchor = '';
+        var hashIdx = raw.indexOf('#');
+        if (hashIdx !== -1) { anchor = raw.slice(hashIdx + 1); raw = raw.slice(0, hashIdx); }
+        if (raw === '' ) raw = '/';
+        if (!routes[raw]) raw = '/';
+        return { path: raw, anchor: anchor };
+      }
+
+      function render() {
+        var r = parseHash();
+        var route = routes[r.path];
+
+        document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
+        var el = document.getElementById(route.view);
+        if (el) el.classList.add('active');
+        document.title = route.title;
+
+        // active nav state
+        document.querySelectorAll('[data-route]').forEach(function (a) {
+          a.classList.toggle('active', a.getAttribute('data-route') === r.path);
+        });
+
+        // close mobile menu on navigate
+        var mm = document.getElementById('mobileMenu');
+        var nt = document.getElementById('navToggle');
+        if (mm) mm.classList.remove('open');
+        if (nt) nt.setAttribute('aria-expanded', 'false');
+
+        // scroll: to in-page anchor if present, else top
+        if (r.anchor) {
+          var target = document.getElementById(r.anchor);
+          if (target) { target.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+        }
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      }
+
+      window.addEventListener('hashchange', render);
+      window.addEventListener('DOMContentLoaded', render);
+      // in case DOMContentLoaded already fired
+      if (document.readyState !== 'loading') render();
+
+      // mobile menu toggle
+      var nt = document.getElementById('navToggle');
+      if (nt) nt.addEventListener('click', function () {
+        var mm = document.getElementById('mobileMenu');
+        var open = mm.classList.toggle('open');
+        nt.setAttribute('aria-expanded', String(open));
+      });
+    })();
+  </script>
+</body>
+</html>
